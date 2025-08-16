@@ -1,0 +1,115 @@
+import cv2
+import numpy as np
+from scipy.spatial import distance
+from pygame import mixer
+import mediapipe as mp
+import time
+
+# Load alarm sound
+mixer.init()
+mixer.music.load("music.wav")
+
+# EAR and MAR thresholds
+EAR_THRESH = 0.25
+EAR_CONSEC_FRAMES = 3  # seconds
+MAR_THRESH = 0.7  # higher = wider mouth = yawning
+MAR_CONSEC_FRAMES = 150  # frames of yawn
+
+# Timer setup
+flag = 0
+yawn_flag = 0
+start_time = None
+
+# MediaPipe setup
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
+
+LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]
+RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
+MOUTH_IDX = [13, 14, 78, 308, 82, 312]  # Approx mouth open detection
+
+# Aspect Ratio functions
+def aspect_ratio(points):
+    A = distance.euclidean(points[1], points[5])
+    B = distance.euclidean(points[2], points[4])
+    C = distance.euclidean(points[0], points[3])
+    return (A + B) / (2.0 * C)
+
+# Camera setup
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("[ERROR] Could not open webcam.")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    h, w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb)
+
+    alert = False
+    message = ""
+
+    if results.multi_face_landmarks:
+        for face_landmarks in results.multi_face_landmarks:
+            left_eye, right_eye, mouth = [], [], []
+
+            for idx in LEFT_EYE_IDX:
+                x = int(face_landmarks.landmark[idx].x * w)
+                y = int(face_landmarks.landmark[idx].y * h)
+                left_eye.append((x, y))
+                cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+
+            for idx in RIGHT_EYE_IDX:
+                x = int(face_landmarks.landmark[idx].x * w)
+                y = int(face_landmarks.landmark[idx].y * h)
+                right_eye.append((x, y))
+                cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+
+            for idx in MOUTH_IDX:
+                x = int(face_landmarks.landmark[idx].x * w)
+                y = int(face_landmarks.landmark[idx].y * h)
+                mouth.append((x, y))
+                cv2.circle(frame, (x, y), 1, (255, 0, 0), -1)
+
+            # EAR check
+            ear = (aspect_ratio(left_eye) + aspect_ratio(right_eye)) / 2.0
+
+            if ear < EAR_THRESH:
+                if start_time is None:
+                    start_time = time.time()
+                elif time.time() - start_time >= EAR_CONSEC_FRAMES:
+                    alert = True
+                    message = "WAKE UP ALERT!"
+            else:
+                start_time = None
+
+            # MAR check
+            mar = aspect_ratio(mouth)
+            if mar > MAR_THRESH:
+                yawn_flag += 1
+                if yawn_flag >= MAR_CONSEC_FRAMES:
+                    alert = True
+                    message = "WAKE UP ALERT!"
+            else:
+                yawn_flag = 0
+
+    # Show alert on screen
+    if alert:
+        cv2.putText(frame, message, (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+        if not mixer.music.get_busy():
+            mixer.music.play()
+    else:
+        mixer.music.stop()
+
+    cv2.imshow("Driver Drowsiness Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
